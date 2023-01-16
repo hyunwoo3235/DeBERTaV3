@@ -1,36 +1,79 @@
-import torch
+from typing import Dict, Optional, Tuple
+
+import flax
+import numpy as np
+from transformers import PreTrainedTokenizerBase
 
 
-# from https://github.com/richarddwang/electra_pytorch/blob/master/pretrain.py
-def mask_tokens(inputs, mask_token_index, vocab_size, special_token_indices, mlm_probability=0.15, replace_prob=0.1,
-                orginal_prob=0.1, ignore_index=-100):
-    device = inputs.device
-    labels = inputs.clone()
+# from https://github.com/huggingface/transformers/blob/main/examples/flax/language-modeling/run_mlm_flax.py
+@flax.struct.dataclass
+class FlaxDataCollatorForMaskedLM:
+    tokenizer: PreTrainedTokenizerBase
+    mlm_probability: float = 0.15
+    replace_prob = 0.1
+    orginal_prob = 0.1
 
-    # Get positions to apply mlm (mask/replace/not changed). (mlm_probability)
-    probability_matrix = torch.full(labels.shape, mlm_probability, device=device)
-    special_tokens_mask = torch.full(
-        inputs.shape, False, dtype=torch.bool, device=device)
-    for sp_id in special_token_indices:
-        special_tokens_mask = special_tokens_mask | (inputs == sp_id)
-    probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
-    mlm_mask = torch.bernoulli(probability_matrix).bool()
-    # We only compute loss on mlm applied tokens
-    labels[~mlm_mask] = ignore_index
+    def __post_init__(self):
+        if self.tokenizer.mask_token is None:
+            raise ValueError(
+                "This tokenizer does not have a mask token which is necessary for masked language modeling. "
+                "You should pass `mlm=False` to train on causal language modeling instead."
+            )
 
-    # mask  (mlm_probability * (1-replace_prob-orginal_prob))
-    mask_prob = 1 - replace_prob - orginal_prob
-    mask_token_mask = torch.bernoulli(torch.full(
-        labels.shape, mask_prob, device=device)).bool() & mlm_mask
-    inputs[mask_token_mask] = mask_token_index
+    def __call__(self, input_ids: np.ndarray) -> Dict[str, np.ndarray]:
+        # Handle dict or lists with proper padding and conversion to tensor.
+        batch = {"input_ids": input_ids}
 
-    # replace with a random token (mlm_probability * replace_prob)
-    if int(replace_prob) != 0:
-        rep_prob = replace_prob / (replace_prob + orginal_prob)
-        replace_token_mask = torch.bernoulli(torch.full(
-            labels.shape, rep_prob, device=device)).bool() & mlm_mask & ~mask_token_mask
-        random_words = torch.randint(
-            vocab_size, labels.shape, dtype=torch.long, device=device)
-        inputs[replace_token_mask] = random_words[replace_token_mask]
+        special_tokens_mask = self.get_special_tokens_mask(batch)
 
-    return inputs, labels, mlm_mask
+        batch["input_ids"], batch["labels"], batch["masked_indices"] = self.mask_tokens(
+            batch["input_ids"], special_tokens_mask=special_tokens_mask
+        )
+        return batch
+
+    # get special tokens mask
+    def get_special_tokens_mask(self, input_ids: np.ndarray) -> np.ndarray:
+        special_tokens_mask = np.zeros_like(input_ids, dtype=np.bool)
+
+        for special_token in self.tokenizer.all_special_ids:
+            special_tokens_mask |= input_ids == special_token
+
+        return special_tokens_mask
+
+    def mask_tokens(
+        self, inputs: np.ndarray, special_tokens_mask: Optional[np.ndarray]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
+        """
+        labels = inputs.copy()
+        # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
+        probability_matrix = np.full(labels.shape, self.mlm_probability)
+        special_tokens_mask = special_tokens_mask.astype("bool")
+
+        probability_matrix[special_tokens_mask] = 0.0
+        masked_indices = np.random.binomial(1, probability_matrix).astype("bool")
+        labels[~masked_indices] = -100  # We only compute loss on masked tokens
+
+        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        indices_replaced = (
+            np.random.binomial(1, np.full(labels.shape, 0.8)).astype("bool")
+            & masked_indices
+        )
+        inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(
+            self.tokenizer.mask_token
+        )
+
+        # 10% of the time, we replace masked input tokens with random word
+        indices_random = np.random.binomial(1, np.full(labels.shape, 0.5)).astype(
+            "bool"
+        )
+        indices_random &= masked_indices & ~indices_replaced
+
+        random_words = np.random.randint(
+            self.tokenizer.vocab_size, size=labels.shape, dtype="i4"
+        )
+        inputs[indices_random] = random_words[indices_random]
+
+        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+        return inputs, labels, masked_indices
