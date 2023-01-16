@@ -24,7 +24,7 @@ class FlaxDataCollatorForMaskedLM:
         # Handle dict or lists with proper padding and conversion to tensor.
         batch = {"input_ids": input_ids}
 
-        special_tokens_mask = self.get_special_tokens_mask(batch)
+        special_tokens_mask = self.get_special_tokens_mask(input_ids)
 
         batch["input_ids"], batch["labels"], batch["masked_indices"] = self.mask_tokens(
             batch["input_ids"], special_tokens_mask=special_tokens_mask
