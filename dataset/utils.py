@@ -22,7 +22,7 @@ class FlaxDataCollatorForMaskedLM:
 
     def __call__(self, input_ids: np.ndarray) -> Dict[str, np.ndarray]:
         # Handle dict or lists with proper padding and conversion to tensor.
-        batch = {"input_ids": input_ids}
+        batch = {"input_ids": input_ids, "attention_mask": np.ones_like(input_ids)}
 
         special_tokens_mask = self.get_special_tokens_mask(input_ids)
 
