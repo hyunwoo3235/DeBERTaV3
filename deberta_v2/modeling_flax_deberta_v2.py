@@ -106,14 +106,14 @@ class FlaxDebertaV2Attention(nn.Module):
         self.output = FlaxDebertaV2SelfOutput(self.config, dtype=self.dtype)
 
     def __call__(
-            self,
-            hidden_states,
-            attention_mask,
-            output_attentions: bool = False,
-            query_states=None,
-            relative_pos=None,
-            rel_embeddings=None,
-            deterministic=True,
+        self,
+        hidden_states,
+        attention_mask,
+        output_attentions: bool = False,
+        query_states=None,
+        relative_pos=None,
+        rel_embeddings=None,
+        deterministic=True,
     ):
         self_outputs = self.self(
             hidden_states,
@@ -189,14 +189,14 @@ class FlaxDebertaV2Layer(nn.Module):
         self.output = FlaxDebertaV2Output(self.config, dtype=self.dtype)
 
     def __call__(
-            self,
-            hidden_states,
-            attention_mask,
-            query_states=None,
-            relative_pos=None,
-            rel_embeddings=None,
-            output_attentions: bool = False,
-            deterministic: bool = True,
+        self,
+        hidden_states,
+        attention_mask,
+        query_states=None,
+        relative_pos=None,
+        rel_embeddings=None,
+        output_attentions: bool = False,
+        deterministic: bool = True,
     ):
         # Self Attention
         attention_output = self.attention(
@@ -219,6 +219,19 @@ class FlaxDebertaV2Layer(nn.Module):
         return (layer_output,)
 
 
+class FlaxDebertaV2ConvLayer(nn.Module):
+    config: DebertaV2Config
+    dtype: jnp.dtype = jnp.float32
+
+    def setup(self):
+        pass
+
+    def __call__(
+        self, hidden_states, residual_states, input_mask, deterministic: bool = True
+    ):
+        raise NotImplementedError
+
+
 class FlaxDebertaV2LayerCollection(nn.Module):
     config: DebertaV2Config
     dtype: jnp.dtype = jnp.float32
@@ -229,19 +242,23 @@ class FlaxDebertaV2LayerCollection(nn.Module):
             for i in range(self.config.num_hidden_layers)
         ]
 
-        self.conv = None
+        self.conv = (
+            FlaxDebertaV2ConvLayer(self.config, dtype=self.dtype)
+            if getattr(self.config, "conv_kernel_size", 0) > 0
+            else None
+        )
 
     def __call__(
-            self,
-            hidden_states,
-            attention_mask,
-            output_hidden_states: bool = False,
-            output_attentions: bool = False,
-            query_states: Optional[jnp.ndarray] = None,
-            relative_pos: Optional[jnp.ndarray] = None,
-            rel_embeddings: Optional[jnp.ndarray] = None,
-            deterministic: bool = True,
-            return_dict: bool = True,
+        self,
+        hidden_states,
+        attention_mask,
+        output_hidden_states: bool = False,
+        output_attentions: bool = False,
+        query_states: Optional[jnp.ndarray] = None,
+        relative_pos: Optional[jnp.ndarray] = None,
+        rel_embeddings: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+        return_dict: bool = True,
     ):
         if attention_mask.ndim <= 2:
             input_mask = attention_mask
@@ -269,7 +286,12 @@ class FlaxDebertaV2LayerCollection(nn.Module):
             output_states = layer_outputs[0]
 
             if i == 0 and self.conv is not None:
-                output_states = self.conv(hidden_states, output_states, input_mask, deterministic=deterministic)
+                output_states = self.conv(
+                    hidden_states,
+                    output_states,
+                    input_mask,
+                    deterministic=deterministic,
+                )
 
             next_kv = output_states
 
@@ -280,7 +302,11 @@ class FlaxDebertaV2LayerCollection(nn.Module):
             all_hidden_states += (output_states,)
 
         if not return_dict:
-            return tuple(v for v in [output_states, all_hidden_states, all_attentions] if v is not None)
+            return tuple(
+                v
+                for v in [output_states, all_hidden_states, all_attentions]
+                if v is not None
+            )
 
         return FlaxBaseModelOutput(
             last_hidden_state=hidden_states,
@@ -301,7 +327,9 @@ class FlaxDebertaV2Encoder(nn.Module):
         self.relative_attention = getattr(self.config, "relative_attention", False)
 
         if self.relative_attention:
-            self.max_relative_positions = getattr(self.config, "max_relative_positions", -1)
+            self.max_relative_positions = getattr(
+                self.config, "max_relative_positions", -1
+            )
             if self.max_relative_positions < 1:
                 self.max_relative_positions = self.config.max_position_embeddings
 
@@ -318,12 +346,15 @@ class FlaxDebertaV2Encoder(nn.Module):
                 self.dtype,
             )
 
-        self.norm_rel_ebd = [x.strip() for x in getattr(self.config, "norm_rel_ebd", "none").lower().split("|")]
+        self.norm_rel_ebd = [
+            x.strip()
+            for x in getattr(self.config, "norm_rel_ebd", "none").lower().split("|")
+        ]
 
         if "layer_norm" in self.norm_rel_ebd:
-            self.LayerNorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
-
-        self.conv = None
+            self.LayerNorm = nn.LayerNorm(
+                epsilon=self.config.layer_norm_eps, dtype=self.dtype
+            )
 
     def get_rel_embedding(self):
         rel_embeddings = self.rel_embeddings if self.relative_attention else None
@@ -334,8 +365,9 @@ class FlaxDebertaV2Encoder(nn.Module):
     def get_attention_mask(self, attention_mask):
         if attention_mask.ndim <= 2:
             extended_attention_mask = jnp.expand_dims(attention_mask, axis=(1, 2))
-            attention_mask = extended_attention_mask * jnp.expand_dims(jnp.squeeze(extended_attention_mask, axis=-2),
-                                                                       axis=-1)
+            attention_mask = extended_attention_mask * jnp.expand_dims(
+                jnp.squeeze(extended_attention_mask, axis=-2), axis=-1
+            )
             attention_mask = attention_mask.astype("i4")
         elif attention_mask.ndim == 3:
             attention_mask = jnp.expand_dims(attention_mask, axis=1)
@@ -344,25 +376,29 @@ class FlaxDebertaV2Encoder(nn.Module):
 
     def get_rel_pos(self, hidden_states, query_states=None, relative_pos=None):
         if self.relative_attention and relative_pos is None:
-            q = query_states.shape[-2] if query_states is not None else hidden_states.shape[-2]
+            q = (
+                query_states.shape[-2]
+                if query_states is not None
+                else hidden_states.shape[-2]
+            )
             relative_pos = build_relative_position(
                 q,
                 hidden_states.shape[-2],
                 bucket_size=self.position_buckets,
-                max_position=self.max_relative_positions
+                max_position=self.max_relative_positions,
             )
         return relative_pos
 
     def __call__(
-            self,
-            hidden_states,
-            attention_mask,
-            output_hidden_states: bool = False,
-            output_attentions: bool = False,
-            query_states: Optional[jnp.ndarray] = None,
-            relative_pos: Optional[jnp.ndarray] = None,
-            deterministic: bool = True,
-            return_dict: bool = True,
+        self,
+        hidden_states,
+        attention_mask,
+        output_hidden_states: bool = False,
+        output_attentions: bool = False,
+        query_states: Optional[jnp.ndarray] = None,
+        relative_pos: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+        return_dict: bool = True,
     ):
         attention_mask = self.get_attention_mask(attention_mask)
         relative_pos = self.get_rel_pos(hidden_states, query_states, relative_pos)
@@ -386,11 +422,15 @@ class FlaxDebertaV2Embeddings(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.embedding_size = getattr(self.config, "embedding_size", self.config.hidden_size)
+        self.embedding_size = getattr(
+            self.config, "embedding_size", self.config.hidden_size
+        )
         self.word_embeddings = nn.Embed(
             self.config.vocab_size,
             self.config.hidden_size,
-            embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            embedding_init=jax.nn.initializers.normal(
+                stddev=self.config.initializer_range
+            ),
             dtype=self.dtype,
         )
 
@@ -401,7 +441,9 @@ class FlaxDebertaV2Embeddings(nn.Module):
             self.position_embeddings = nn.Embed(
                 self.config.max_position_embeddings,
                 self.config.hidden_size,
-                embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+                embedding_init=jax.nn.initializers.normal(
+                    stddev=self.config.initializer_range
+                ),
                 dtype=self.dtype,
             )
 
@@ -409,23 +451,29 @@ class FlaxDebertaV2Embeddings(nn.Module):
             self.token_type_embeddings = nn.Embed(
                 self.config.type_vocab_size,
                 self.config.hidden_size,
-                embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+                embedding_init=jax.nn.initializers.normal(
+                    stddev=self.config.initializer_range
+                ),
                 dtype=self.dtype,
             )
 
         if self.embedding_size != self.config.hidden_size:
-            self.embed_proj = nn.Dense(self.config.hidden_size, use_bias=False, dtype=False)
-        self.LayerNorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
+            self.embed_proj = nn.Dense(
+                self.config.hidden_size, use_bias=False, dtype=False
+            )
+        self.LayerNorm = nn.LayerNorm(
+            epsilon=self.config.layer_norm_eps, dtype=self.dtype
+        )
         self.dropout = nn.Dropout(rate=self.config.hidden_dropout_prob)
 
     def __call__(
-            self,
-            input_ids=None,
-            token_type_ids=None,
-            position_ids=None,
-            mask=None,
-            inputs_embeds=None,
-            deterministic: bool = True,
+        self,
+        input_ids=None,
+        token_type_ids=None,
+        position_ids=None,
+        mask=None,
+        inputs_embeds=None,
+        deterministic: bool = True,
     ):
         if input_ids is not None:
             input_shape = input_ids.shape
@@ -450,7 +498,9 @@ class FlaxDebertaV2Embeddings(nn.Module):
         if self.position_biased_input:
             embeddings += position_embeddings
         if self.config.type_vocab_size > 0:
-            token_type_embeddings = self.token_type_embeddings(token_type_ids.astype("i4"))
+            token_type_embeddings = self.token_type_embeddings(
+                token_type_ids.astype("i4")
+            )
             embeddings += token_type_embeddings
 
         if self.embedding_size != self.config.hidden_size:
@@ -479,8 +529,8 @@ def make_log_bucket_position(relative_pos, bucket_size, max_position):
         jnp.abs(relative_pos),
     )
     log_pos = (
-            jnp.ceil(jnp.log(abs_pos / mid) / jnp.log((max_position - 1) / mid) * (mid - 1))
-            + mid
+        jnp.ceil(jnp.log(abs_pos / mid) / jnp.log((max_position - 1) / mid) * (mid - 1))
+        + mid
     )
     bucket_pos = jnp.where(abs_pos <= mid, abs_pos, log_pos * sign)
     return bucket_pos.astype("i4")
@@ -532,7 +582,7 @@ class FlaxDisentangledSelfAttention(nn.Module):
     def setup(self):
         self.num_attention_heads = self.config.num_attention_heads
         _attention_head_size = (
-                self.config.hidden_size // self.config.num_attention_heads
+            self.config.hidden_size // self.config.num_attention_heads
         )
         self.attention_head_size = getattr(
             self.config, "attention_head_size", _attention_head_size
@@ -603,14 +653,14 @@ class FlaxDisentangledSelfAttention(nn.Module):
         return x
 
     def __call__(
-            self,
-            hidden_states,
-            attention_mask,
-            query_states=None,
-            relative_pos=None,
-            rel_embeddings=None,
-            output_attentions=False,
-            deterministic=True,
+        self,
+        hidden_states,
+        attention_mask,
+        query_states=None,
+        relative_pos=None,
+        rel_embeddings=None,
+        output_attentions=False,
+        deterministic=True,
     ):
         if query_states is None:
             query_states = hidden_states
@@ -632,7 +682,7 @@ class FlaxDisentangledSelfAttention(nn.Module):
             scale_factor += 1
         scale = jnp.sqrt(query_layer.shape[-1] * scale_factor)
         attention_scores = (
-                jnp.matmul(query_layer, jnp.transpose(key_layer, (0, 2, 1))) / scale
+            jnp.matmul(query_layer, jnp.transpose(key_layer, (0, 2, 1))) / scale
         )
         if self.relative_attention:
             rel_embeddings = self.pos_dropout(
@@ -683,7 +733,7 @@ class FlaxDisentangledSelfAttention(nn.Module):
         return context_layer
 
     def disentangled_att_bias(
-            self, query_layer, key_layer, relative_pos, rel_embeddings, scale_factor
+        self, query_layer, key_layer, relative_pos, rel_embeddings, scale_factor
     ):
         if relative_pos is None:
             q = query_layer.shape[-2]
@@ -706,26 +756,37 @@ class FlaxDisentangledSelfAttention(nn.Module):
         att_span = self.pos_ebd_size
 
         rel_embeddings = jnp.expand_dims(
-            rel_embeddings[self.pos_ebd_size - att_span: self.pos_ebd_size + att_span, :], 0
+            rel_embeddings[
+                self.pos_ebd_size - att_span : self.pos_ebd_size + att_span, :
+            ],
+            0,
         )
         if self.share_att_key:
             pos_query_layer = jnp.tile(
-                self.transpose_for_scores(self.query_proj(rel_embeddings), self.num_attention_heads),
+                self.transpose_for_scores(
+                    self.query_proj(rel_embeddings), self.num_attention_heads
+                ),
                 (query_layer.shape[0] // self.num_attention_heads, 1, 1),
             )
             pos_key_layer = jnp.tile(
-                self.transpose_for_scores(self.key_proj(rel_embeddings), self.num_attention_heads),
+                self.transpose_for_scores(
+                    self.key_proj(rel_embeddings), self.num_attention_heads
+                ),
                 (query_layer.shape[0] // self.num_attention_heads, 1, 1),
             )
         else:
             if "c2p" in self.pos_att_type:
                 pos_key_layer = jnp.tile(
-                    self.transpose_for_scores(self.pos_key_proj(rel_embeddings), self.num_attention_heads),
+                    self.transpose_for_scores(
+                        self.pos_key_proj(rel_embeddings), self.num_attention_heads
+                    ),
                     (query_layer.shape[0] // self.num_attention_heads, 1, 1),
                 )
             if "p2c" in self.pos_att_type:
                 pos_query_layer = jnp.tile(
-                    self.transpose_for_scores(self.pos_query_proj(rel_embeddings), self.num_attention_heads),
+                    self.transpose_for_scores(
+                        self.pos_query_proj(rel_embeddings), self.num_attention_heads
+                    ),
                     (query_layer.shape[0] // self.num_attention_heads, 1, 1),
                 )
 
@@ -739,7 +800,11 @@ class FlaxDisentangledSelfAttention(nn.Module):
                 c2p_att,
                 jnp.broadcast_to(
                     jnp.squeeze(c2p_pos, axis=0),
-                    (query_layer.shape[0], query_layer.shape[1], relative_pos.shape[-1]),
+                    (
+                        query_layer.shape[0],
+                        query_layer.shape[1],
+                        relative_pos.shape[-1],
+                    ),
                 ),
                 axis=-1,
             )
@@ -767,9 +832,13 @@ class FlaxDisentangledSelfAttention(nn.Module):
                     p2c_att,
                     jnp.broadcast_to(
                         jnp.squeeze(p2c_pos, 0),
-                        (query_layer.shape[0], key_layer.shape[-2], key_layer.shape[-2]),
+                        (
+                            query_layer.shape[0],
+                            key_layer.shape[-2],
+                            key_layer.shape[-2],
+                        ),
                     ),
-                    axis=-1
+                    axis=-1,
                 ),
                 (0, 2, 1),
             )
@@ -780,19 +849,23 @@ class FlaxDisentangledSelfAttention(nn.Module):
 
 class FlaxDebertaV2PredictionHeadTransform(nn.Module):
     config: DebertaV2Config
-    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.dense = nn.Dense(
             self.config.hidden_size,
-            kernel_init=jax.nn.initializers.normal(self.config.initializer_range, self.dtype),
+            kernel_init=jax.nn.initializers.normal(
+                self.config.initializer_range, self.dtype
+            ),
             dtype=self.dtype,
         )
         if isinstance(self.config.hidden_act, str):
             self.transform_act_fn = ACT2FN[self.config.hidden_act]
         else:
             self.transform_act_fn = self.config.hidden_act
-        self.LayerNorm = nn.LayerNorm(epsilon=self.config.layer_norm_eps, dtype=self.dtype)
+        self.LayerNorm = nn.LayerNorm(
+            epsilon=self.config.layer_norm_eps, dtype=self.dtype
+        )
 
     def __call__(self, hidden_states):
         hidden_states = self.dense(hidden_states)
@@ -803,18 +876,24 @@ class FlaxDebertaV2PredictionHeadTransform(nn.Module):
 
 class FlaxDebertaV2LMPredictionHead(nn.Module):
     config: DebertaV2Config
-    dtype: jnp.dtype = jnp.float32  # the dtype of the computation
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.transform = FlaxDebertaV2PredictionHeadTransform(self.config, dtype=self.dtype)
+        self.transform = FlaxDebertaV2PredictionHeadTransform(
+            self.config, dtype=self.dtype
+        )
 
         self.decoder = nn.Dense(
             self.config.vocab_size,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.initializer_range, self.dtype),
+            kernel_init=jax.nn.initializers.normal(
+                self.config.initializer_range, self.dtype
+            ),
             dtype=self.dtype,
         )
-        self.bias = self.param("bias", jax.nn.initializers.zeros, (self.config.vocab_size,))
+        self.bias = self.param(
+            "bias", jax.nn.initializers.zeros, (self.config.vocab_size,)
+        )
 
     def __call__(self, hidden_states):
         hidden_states = self.transform(hidden_states)
@@ -823,7 +902,7 @@ class FlaxDebertaV2LMPredictionHead(nn.Module):
         return hidden_states
 
 
-class DebertaV2OnlyMLMHead(nn.Module):
+class FlaxDebertaV2OnlyMLMHead(nn.Module):
     config: DebertaV2Config
     dtype: jnp.dtype = jnp.float32
 
@@ -835,6 +914,46 @@ class DebertaV2OnlyMLMHead(nn.Module):
         return hidden_states
 
 
+class FlaxDebertaV2DiscriminatorPredictions(nn.Module):
+    config: DebertaV2Config
+    dtype: jnp.dtype = jnp.float32
+
+    def setup(self):
+        self.dense = nn.Dense(
+            self.config.hidden_size,
+            kernel_init=jax.nn.initializers.normal(
+                self.config.initializer_range, self.dtype
+            ),
+            dtype=self.dtype,
+        )
+        if isinstance(self.config.hidden_act, str):
+            self.transform_act_fn = ACT2FN[self.config.hidden_act]
+        else:
+            self.transform_act_fn = self.config.hidden_act
+        self.LayerNorm = nn.LayerNorm(
+            epsilon=self.config.layer_norm_eps, dtype=self.dtype
+        )
+
+        self.classifier = nn.Dense(
+            1,
+            kernel_init=jax.nn.initializers.normal(
+                self.config.initializer_range, self.dtype
+            ),
+            dtype=self.dtype,
+        )
+
+    def __call__(self, hidden_states):
+        ctx_states = hidden_states[:, 0, :]
+        hidden_states = self.LayerNorm(
+            jnp.expand_dims(ctx_states, axis=-2) + hidden_states
+        )
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.transform_act_fn(hidden_states)
+
+        logits = self.classifier(hidden_states).squeeze(-1)
+        return logits
+
+
 class FlaxDebertaV2PreTrainedModel(FlaxPreTrainedModel):
     config_class = DebertaV2Config
     base_model_prefix = "deberta_v2"
@@ -842,13 +961,13 @@ class FlaxDebertaV2PreTrainedModel(FlaxPreTrainedModel):
     module_class: nn.Module = None
 
     def __init__(
-            self,
-            config: DebertaV2Config,
-            input_shape: Tuple = (1, 1),
-            seed: int = 0,
-            dtype: jnp.dtype = jnp.float32,
-            _do_init: bool = True,
-            **kwargs,
+        self,
+        config: DebertaV2Config,
+        input_shape: Tuple = (1, 1),
+        seed: int = 0,
+        dtype: jnp.dtype = jnp.float32,
+        _do_init: bool = True,
+        **kwargs,
     ):
         module = self.module_class(config=config, dtype=dtype, **kwargs)
         super().__init__(
@@ -861,7 +980,7 @@ class FlaxDebertaV2PreTrainedModel(FlaxPreTrainedModel):
         )
 
     def init_weights(
-            self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None
+        self, rng: jax.random.PRNGKey, input_shape: Tuple, params: FrozenDict = None
     ) -> FrozenDict:
         # init input tensors
         input_ids = jnp.zeros(input_shape, dtype="i4")
@@ -896,17 +1015,17 @@ class FlaxDebertaV2PreTrainedModel(FlaxPreTrainedModel):
             return random_params
 
     def __call__(
-            self,
-            input_ids,
-            attention_mask=None,
-            token_type_ids=None,
-            position_ids=None,
-            params: dict = None,
-            dropout_rng: jax.random.PRNGKey = None,
-            train: bool = False,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+        self,
+        input_ids,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        params: dict = None,
+        dropout_rng: jax.random.PRNGKey = None,
+        train: bool = False,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
     ):
         output_attentions = (
             output_attentions
@@ -971,19 +1090,21 @@ class FlaxDebertaV2Module(nn.Module):
         self.z_steps = 0
 
     def __call__(
-            self,
-            input_ids,
-            attention_mask,
-            token_type_ids: Optional[jnp.ndarray] = None,
-            position_ids: Optional[jnp.ndarray] = None,
-            inputs_embeds: Optional[jnp.ndarray] = None,
-            output_attentions: bool = False,
-            output_hidden_states: bool = False,
-            return_dict: bool = True,
-            deterministic: bool = True,
+        self,
+        input_ids,
+        attention_mask,
+        token_type_ids: Optional[jnp.ndarray] = None,
+        position_ids: Optional[jnp.ndarray] = None,
+        inputs_embeds: Optional[jnp.ndarray] = None,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+        deterministic: bool = True,
     ):
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+            raise ValueError(
+                "You cannot specify both input_ids and inputs_embeds at the same time"
+            )
         elif input_ids is not None:
             input_shape = input_ids.shape
         elif inputs_embeds is not None:
@@ -1021,11 +1142,15 @@ class FlaxDebertaV2Module(nn.Module):
         sequence_output = encoded_layers[-1]
 
         if not return_dict:
-            return (sequence_output,) + encoder_outputs[(1 if output_hidden_states else 2):]
+            return (sequence_output,) + encoder_outputs[
+                (1 if output_hidden_states else 2) :
+            ]
 
         return FlaxBaseModelOutput(
             last_hidden_state=sequence_output,
-            hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
+            hidden_states=encoder_outputs.hidden_states
+            if output_hidden_states
+            else None,
             attentions=encoder_outputs.attentions,
         )
 
@@ -1044,21 +1169,23 @@ class FlaxDebertaV2ForMaskedLMModule(nn.Module):
             add_pooling_layer=False,
             dtype=self.dtype,
         )
-        self.cls = DebertaV2OnlyMLMHead(config=self.config, dtype=self.dtype)
+        self.cls = FlaxDebertaV2OnlyMLMHead(config=self.config, dtype=self.dtype)
 
     def __call__(
-            self,
-            input_ids,
-            attention_mask,
-            token_type_ids,
-            position_ids,
-            inputs_embeds=None,
-            deterministic: bool = True,
-            output_attentions: bool = False,
-            output_hidden_states: bool = False,
-            return_dict: bool = True,
+        self,
+        input_ids,
+        attention_mask,
+        token_type_ids,
+        position_ids,
+        inputs_embeds=None,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
     ):
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         # Model
         outputs = self.deberta(
@@ -1088,3 +1215,63 @@ class FlaxDebertaV2ForMaskedLMModule(nn.Module):
 
 class FlaxDebertaV2ForMaskedLM(FlaxDebertaV2PreTrainedModel):
     module_class = FlaxDebertaV2ForMaskedLMModule
+
+
+class FlaxDebertaV2ForPreTrainingModule(nn.Module):
+    config: DebertaV2Config
+    dtype: jnp.dtype = jnp.float32
+
+    def setup(self):
+        self.deberta = FlaxDebertaV2Module(
+            config=self.config,
+            add_pooling_layer=False,
+            dtype=self.dtype,
+        )
+        self.mask_predictions = FlaxDebertaV2DiscriminatorPredictions(
+            config=self.config, dtype=self.dtype
+        )
+
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        token_type_ids,
+        position_ids,
+        inputs_embeds=None,
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+
+        # Model
+        outputs = self.deberta(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            deterministic=deterministic,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0]
+        mask_prediction_scores = self.mask_predictions(sequence_output)
+
+        if not return_dict:
+            return (mask_prediction_scores,) + outputs[1:]
+
+        return FlaxMaskedLMOutput(
+            logits=mask_prediction_scores,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class FlaxDebertaV2ForPreTraining(FlaxDebertaV2PreTrainedModel):
+    module_class = FlaxDebertaV2ForPreTrainingModule
