@@ -1,6 +1,6 @@
 # DeBERTaV3
 
-Train DeBERTa V3 with hivemind
+Train DeBERTa V3 with jax/flax
 
 # Citation
 
